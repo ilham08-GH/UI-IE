@@ -1,0 +1,5 @@
+streamlit
+streamlit-annotated-text
+scikit-learn
+numpy
+git+https://github.com/MeMartijn/updated-sklearn-crfsuite.git#egg=sklearn_crfsuite
