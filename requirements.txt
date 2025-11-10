@@ -1,5 +1,5 @@
 streamlit
-streamlit-annotated-text
+annotated-text
 scikit-learn
 numpy
 six
