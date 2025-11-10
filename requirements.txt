@@ -1,6 +1,7 @@
 streamlit
-annotated-text
+st-annotated-text
 scikit-learn
 numpy
 six
 python-crfsuite
+git+https://github.com/MeMartijn/updated-sklearn-crfsuite.git#egg=sklearn_crfsuite
