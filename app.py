@@ -130,8 +130,7 @@ def load_model():
 
 # ----- Tampilan UI -----
 st.set_page_config(page_title="Ekstraksi Informasi", layout="wide")
-st.title("🔎 Aplikasi Ekstraksi Informasi Teks Hukum")
-st.markdown("Aplikasi ini menggunakan model **CRF** untuk mengekstrak entitas dari teks.")
+st.title("🔎 Aplikasi Ekstraksi Informasi Teks")
 
 # Memuat model
 crf = load_model()
@@ -145,7 +144,7 @@ else:
     # Contoh teks dari data Anda untuk memudahkan [cite: 97]
     default_text = "Pwd Sabar Bin Sawijo TUNTUTAN Noviana, S.H. Terdakwa menghadap sendiri"
     text_input = st.text_area("Teks:", value=default_text, height=150,
-                              help="Masukkan teks putusan atau dokumen hukum di sini.")
+                              help="Masukkan teks putusan atau dokumen di sini.")
 
     # ----- Tombol Proses -----
     if st.button("🚀 Proses Teks", type="primary"):
@@ -166,7 +165,7 @@ else:
             words = text_input.split()
 
             # 4. Tampilkan hasil dengan highlight
-            st.header("Hasil Ekstraksi (Named Entity Recognition)")
+            st.header("Hasil Ekstraksi")
             
             if len(words) == len(tags):
                 # Siapkan data untuk `annotated_text`
