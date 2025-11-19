@@ -4,4 +4,5 @@ scikit-learn
 numpy
 six
 python-crfsuite
+gensim
 git+https://github.com/MeMartijn/updated-sklearn-crfsuite.git#egg=sklearn_crfsuite
