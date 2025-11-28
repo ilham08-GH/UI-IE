@@ -1,191 +1,146 @@
 import streamlit as st
-import joblib
-from annotated_text import annotated_text
-import warnings
+import numpy as np
+import tensorflow as tf
+from gensim.models import Word2Vec
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+import pickle
 
-# Mengabaikan warning dari joblib saat memuat model sklearn
-warnings.filterwarnings("ignore", category=UserWarning)
+# --- Konfigurasi Halaman ---
+st.set_page_config(
+    page_title="Prediksi Entitas Pidana (BiLSTM + CBOW)",
+    layout="centered"
+)
 
-# ====================================================================
-# 1. FUNGSI HELPER (Disalin dari Notebook Anda)
-# Kita salin fungsi feature engineering CRF Anda [cite: 602-680]
-# ====================================================================
+# --- Konstanta (Sesuai PDF Anda) ---
+MAX_LEN = 100        # Halaman 2 PDF
+VECTOR_SIZE = 10     # Halaman 38 PDF (vector_size=10)
 
-def word2features(sent, i):
-    word = sent[i][0]
-    prev = sent[i][1]
-    nextt = sent[i][2]
-    
-    # Fitur-fitur ini persis seperti di notebook Anda [cite: 608-634]
-    features = {
-        'bias': 1.0,
-        'word.lower()': word.lower(),
-        'word[-3:]': word[-3:],
-        'word[-2:]': word[-2:],
-        'word.isupper()': word.isupper(),
-        'word.istitle()': word.istitle(),
-        'word.isdigit()': word.isdigit(),
-        'prev.lower()': prev.lower(),
-        'prev[-3:]': prev[-3:],
-        'prev[-2:]': prev[-2:],
-        'prev.isupper()': prev.isupper(),
-        'prev.istitle()': prev.istitle(),
-        'prev.isdigit()': prev.isdigit(),
-        'nextt.lower()': nextt.lower(),
-        'nextt[-3:]': nextt[-3:],
-        'nextt[-2:]': nextt[-2:],
-        'nextt.isupper()': nextt.isupper(),
-        'nextt.istitle()': nextt.istitle(),
-        'nextt.isdigit()': nextt.isdigit(),
-    }
-    
-    # Fitur untuk kata sebelumnya [cite: 635-652]
-    if i > 0:
-        word1 = sent[i-1][0]
-        prev1 = sent[i-1][1]
-        nextt1 = sent[i-1][2]
-        features.update({
-            '-1:word.lower()': word1.lower(),
-            '-1:word.istitle()': word1.istitle(),
-            '-1:word.isupper()': word1.isupper(),
-            '-1:prev.lower()': prev1.lower(),
-            '-1:prev.istitle()': prev1.istitle(),
-            '-1:prev.isupper()': prev1.isupper(),
-            '-1:nextt.lower()': nextt1.lower(),
-            '-1:nextt.istitle()': nextt1.istitle(),
-            '-1:nextt.isupper()': nextt1.isupper(),
-        })
-    else:
-        # Menandakan Awal Kalimat (Beginning of Sentence) [cite: 653]
-        features['BOS'] = True
-        
-    # Fitur untuk kata sesudahnya [cite: 654-672]
-    if i < len(sent)-1:
-        word1 = sent[i+1][0]
-        prev1 = sent[i+1][1]
-        nextt1 = sent[i+1][2]
-        features.update({
-            '+1:word.lower()': word1.lower(),
-            '+1:word.istitle()': word1.istitle(),
-            '+1:word.isupper()': word1.isupper(),
-            '+1:prev.lower()': prev1.lower(),
-            '+1:prev.istitle()': prev1.istitle(),
-            '+1:prev.isupper()': prev1.isupper(),
-            '+1:nextt.lower()': nextt1.lower(),
-            '+1:nextt.istitle()': nextt1.istitle(),
-            '+1:nextt.isupper()': nextt1.isupper(),
-        })
-    else:
-        # Menandakan Akhir Kalimat (End of Sentence) [cite: 673]
-        features['EOS'] = True
-        
-    return features
-
-# Fungsi ini juga disalin dari notebook Anda [cite: 675-677]
-def sent2features(sent):
-    return [word2features(sent, i) for i in range(len(sent))]
-
-# ====================================================================
-# 2. FUNGSI PREPROCESSING BARU
-# Fungsi ini adalah "lem" yang mengubah teks mentah dari user
-# menjadi format yang dipahami `word2features`.
-# ====================================================================
-
-def format_raw_text(raw_text):
-    """
-    Mengubah teks input mentah (string) menjadi format list of tuples 
-    (word, prev, nextt, dummy_label) yang dibutuhkan oleh `sent2features`.
-    """
-    words = raw_text.split()
-    sentence_tuples = []
-    
-    for i in range(len(words)):
-        word = words[i]
-        # Logika `prev` dan `next` sederhana, bisa disesuaikan jika Anda punya
-        # logika yang lebih kompleks saat membuat CSV.
-        prev = words[i-1] if i > 0 else ""
-        nextt = words[i+1] if i < len(words) - 1 else ""
-        
-        # 'O' adalah dummy label. Tidak digunakan saat prediksi,
-        # tapi dibutuhkan agar struktur datanya sama.
-        sentence_tuples.append((word, prev, nextt, 'O')) 
-        
-    # Model CRF Anda di-train pada *list of sentences* [cite: 681, 707]
-    # Jadi kita bungkus dia dalam list, seolah-olah ini adalah 1 kalimat.
-    return [sentence_tuples]
-
-# ====================================================================
-# 3. FUNGSI UTAMA APLIKASI STREAMLIT
-# ====================================================================
-
-# @st.cache_resource digunakan agar model hanya di-load sekali
+# --- Fungsi Load Model & Resources ---
 @st.cache_resource
-def load_model():
-    """Memuat model CRF yang sudah disimpan."""
+def load_resources():
+    # 1. Load Model BiLSTM
     try:
-        model = joblib.load('crf_model.joblib')
-        return model
-    except FileNotFoundError:
-        return None
+        model = tf.keras.models.load_model('ner_bilstm_cbow.keras')
+    except Exception as e:
+        st.error(f"Error memuat model .keras: {e}")
+        return None, None, None
 
-# ----- Tampilan UI -----
-st.set_page_config(page_title="Ekstraksi Informasi", layout="wide")
-st.title("🔎 Aplikasi Ekstraksi Informasi Teks")
+    # 2. Load Model Word2Vec (CBOW)
+    try:
+        cbow_model = Word2Vec.load("cbow_embedding.model")
+    except Exception as e:
+        st.error(f"Error memuat model Word2Vec: {e}")
+        return None, None, None
 
-# Memuat model
-crf = load_model()
-
-if crf is None:
-    st.error("File model 'crf_model.joblib' tidak ditemukan. Pastikan Anda sudah menyimpan model dari notebook.")
-else:
-    # ----- Area Input -----
-    st.header("Masukkan Teks untuk Dianalisis")
-    
-    # Contoh teks dari data Anda untuk memudahkan [cite: 97]
-    default_text = "Pwd Sabar Bin Sawijo TUNTUTAN Noviana, S.H. Terdakwa menghadap sendiri"
-    text_input = st.text_area("Teks:", value=default_text, height=150,
-                              help="Masukkan teks putusan atau dokumen di sini.")
-
-    # ----- Tombol Proses -----
-    if st.button("🚀 Proses Teks", type="primary"):
-        if text_input.strip():
+    # 3. Load Mapping Label (tag2idx/idx2tag)
+    try:
+        # Kita butuh idx2tag (angka ke label)
+        with open('tag2idx.pkl', 'rb') as f:
+            idx2tag_loaded = pickle.load(f)
             
-            # 1. Ubah teks mentah jadi format yang benar
-            sentence_data = format_raw_text(text_input)
-            
-            # 2. Ekstrak fitur (menggunakan fungsi dari notebook) [cite: 681]
-            X_test_features = [sent2features(s) for s in sentence_data]
-            
-            # 3. Lakukan prediksi
-            y_pred_tags = crf.predict(X_test_features)
-            
-            # y_pred_tags akan berbentuk [[tag1, tag2, ...]]
-            # Kita ambil hasil prediksi untuk kalimat pertama (indeks 0)
-            tags = y_pred_tags[0]
-            words = text_input.split()
-
-            # 4. Tampilkan hasil dengan highlight
-            st.header("Hasil Ekstraksi")
-            
-            if len(words) == len(tags):
-                # Siapkan data untuk `annotated_text`
-                annotated_result = []
-                for word, tag in zip(words, tags):
-                    # Tag '0' adalah "Other" (bukan entitas), kita biarkan 
-                    if tag != '0':
-                        # Tambahkan sebagai tuple (kata, tag)
-                        annotated_result.append((word, tag))
-                    else:
-                        # Tambahkan sebagai string biasa
-                        annotated_result.append(word + " ")
-                
-                # Tampilkan!
-                annotated_text(*annotated_result)
-            
-            else:
-                st.error("Terjadi kesalahan: Jumlah kata dan tag hasil prediksi tidak cocok.")
-                st.write("Words:", words)
-                st.write("Tags:", tags)
-
+        # Cek apakah formatnya {label: angka} atau {angka: label}
+        # Jika formatnya {label: angka}, kita balik dulu
+        sample_key = next(iter(idx2tag_loaded))
+        if isinstance(sample_key, str): 
+            idx2tag = {v: k for k, v in idx2tag_loaded.items()}
         else:
-            st.warning("Silakan masukkan teks terlebih dahulu.")
+            idx2tag = idx2tag_loaded
+            
+    except FileNotFoundError:
+        st.warning("File tag2idx.pkl tidak ditemukan. Menggunakan mapping default (Mungkin tidak akurat).")
+        # List tag default jika file tidak ada
+        tags_list = ['O', 'B_ADVO', 'B_ARTV', 'B_CRIA', 'B_DEFN', 'B_JUDG', 'B_JUDP', 
+                     'B_PENA', 'B_PROS', 'B_PUNI', 'B_REGI', 'B_TIMV', 'B_VERN', 
+                     'I_ADVO', 'I_ARTV', 'I_CRIA', 'I_DEFN', 'I_JUDG', 'I_JUDP', 
+                     'I_PENA', 'I_PROS', 'I_PUNI', 'I_REGI', 'I_TIMV', 'I_VERN']
+        idx2tag = {i: tag for i, tag in enumerate(tags_list)}
+        
+    return model, cbow_model, idx2tag
+
+# Memuat resources
+model, cbow_model, idx2tag = load_resources()
+
+# --- Fungsi Preprocessing (Sesuai PDF Halaman 24 & 39) ---
+def get_word_embedding(word, cbow_model):
+    """Mengambil vektor embedding untuk satu kata."""
+    if word in cbow_model.wv:
+        return cbow_model.wv[word]
+    else:
+        return np.zeros(cbow_model.vector_size)
+
+def prepare_input(text, cbow_model, max_len):
+    """
+    Mengubah kalimat input menjadi matriks vektor embedding.
+    Logika: Tokenize -> Get Embedding -> Padding
+    """
+    # 1. Tokenisasi sederhana (split spasi) & lowercase
+    words = text.lower().split()
+    
+    # 2. Ubah kata jadi vektor
+    # X shape: (1, jumlah_kata, vector_size)
+    X = [[get_word_embedding(word, cbow_model) for word in words]]
+    
+    # 3. Padding agar panjangnya sama dengan MAX_LEN (100)
+    # padding='post' artinya nol ditambahkan di belakang
+    X_padded = pad_sequences(maxlen=max_len, sequences=X, padding="post", dtype='float32')
+    
+    return X_padded, words
+
+# --- UI Aplikasi Utama ---
+st.title("⚖️ Deteksi Entitas Pidana")
+st.write("Model: BiLSTM + Word2Vec (CBOW)")
+
+# Input Text Area
+input_text = st.text_area("Masukkan teks putusan:", height=150, 
+                          placeholder="Contoh: Terdakwa Sabar bin Sawijo terbukti melanggar Pasal 362 KUHP...")
+
+if st.button("Prediksi"):
+    if input_text and model and cbow_model:
+        # 1. Preprocessing
+        X_new, tokenized_words = prepare_input(input_text, cbow_model, MAX_LEN)
+        
+        # 2. Prediksi Model
+        y_pred = model.predict(X_new)
+        
+        # 3. Ambil hasil argmax (index dengan probabilitas tertinggi)
+        # y_pred shape: (1, 100, jumlah_tag) -> ambil batch pertama
+        y_pred_indices = np.argmax(y_pred, axis=-1)[0]
+        
+        # 4. Tampilkan Hasil
+        st.subheader("Hasil Ekstraksi:")
+        
+        # Format hasil agar enak dibaca
+        results = []
+        for i, word in enumerate(tokenized_words):
+            if i < MAX_LEN:
+                tag_index = y_pred_indices[i]
+                tag_name = idx2tag.get(tag_index, "Unknown")
+                
+                # Hanya simpan jika bukan padding atau mapping valid
+                results.append({"Kata": word, "Label": tag_name})
+
+        # Tampilkan sebagai Dataframe berwarna
+        import pandas as pd
+        df = pd.DataFrame(results)
+        
+        # Mewarnai baris yang bukan 'O' (Other) agar entitas terlihat jelas
+        def highlight_entity(row):
+            if row['Label'] != 'O':
+                return ['background-color: #fffdc1'] * len(row)
+            else:
+                return [''] * len(row)
+
+        st.dataframe(df.style.apply(highlight_entity, axis=1), use_container_width=True)
+        
+        # Tampilan Raw Tags (Optional)
+        with st.expander("Lihat Raw Tags"):
+            st.write(results)
+
+    elif not input_text:
+        st.warning("Mohon masukkan teks terlebih dahulu.")
+    else:
+        st.error("Model belum siap. Cek file .keras, .model, dan .pkl Anda.")
+
+# Footer info
+st.markdown("---")
+st.caption("Dideploy menggunakan Streamlit Community Cloud")
