@@ -1,8 +1,6 @@
 streamlit
-st-annotated-text
-scikit-learn
-numpy
-six
-python-crfsuite
+tensorflow
 gensim
-git+https://github.com/MeMartijn/updated-sklearn-crfsuite.git#egg=sklearn_crfsuite
+numpy
+pandas
+pickle-mixin
