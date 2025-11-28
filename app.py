@@ -4,143 +4,210 @@ import tensorflow as tf
 from gensim.models import Word2Vec
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 import pickle
+import re
 
-# --- Konfigurasi Halaman ---
+# ==========================================
+# 1. KONFIGURASI HALAMAN & TAMPILAN (CSS)
+# ==========================================
 st.set_page_config(
-    page_title="Prediksi Entitas Pidana (BiLSTM + CBOW)",
-    layout="centered"
+    page_title="Ekstraksi Informasi Pidana",
+    layout="centered",
+    initial_sidebar_state="collapsed"
 )
 
-# --- Konstanta (Sesuai PDF Anda) ---
-MAX_LEN = 100        # Halaman 2 PDF
-VECTOR_SIZE = 10     # Halaman 38 PDF (vector_size=10)
+# Custom CSS untuk Tampilan Hitam (Dark Mode Style)
+st.markdown("""
+<style>
+    /* Kotak untuk Entitas (Background Hitam) */
+    .entity-box {
+        background-color: #000000; /* Hitam Pekat */
+        color: #00FF41;            /* Hijau Neon (Matrix Style) */
+        padding: 4px 8px;
+        margin: 2px;
+        border-radius: 4px;
+        display: inline-block;
+        font-family: 'Courier New', monospace; /* Font Terminal */
+        font-weight: bold;
+        border: 1px solid #333;    /* Garis tepi abu tua */
+        box-shadow: 2px 2px 0px #222;
+    }
+    
+    /* Label Kecil di sebelah kata (misal: B_PUNI) */
+    .entity-label {
+        font-size: 0.7em;
+        color: #ffffff;            /* Putih */
+        margin-left: 6px;
+        background-color: #333333; /* Abu-abu untuk label tag */
+        padding: 1px 4px;
+        border-radius: 3px;
+        text-transform: uppercase;
+    }
 
-# --- Fungsi Load Model & Resources ---
+    /* Teks Biasa (Non-Entitas) */
+    .normal-text {
+        font-family: sans-serif;
+        line-height: 2.0;
+        color: #333; /* Warna teks biasa (sesuaikan tema Streamlit user) */
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# 2. KONSTANTA (WAJIB SAMA DENGAN TRAINING)
+# ==========================================
+MAX_LEN = 100       # Panjang sequence maksimal
+VECTOR_SIZE = 10    # Dimensi embedding CBOW
+
+# ==========================================
+# 3. FUNGSI LOAD RESOURCES (MODEL & MAPPING)
+# ==========================================
 @st.cache_resource
 def load_resources():
-    # 1. Load Model BiLSTM
     try:
+        # A. Load Model BiLSTM
         model = tf.keras.models.load_model('ner_bilstm_cbow.keras')
-    except Exception as e:
-        st.error(f"Error memuat model .keras: {e}")
-        return None, None, None
-
-    # 2. Load Model Word2Vec (CBOW)
-    try:
-        cbow_model = Word2Vec.load("cbow_embedding.model")
-    except Exception as e:
-        st.error(f"Error memuat model Word2Vec: {e}")
-        return None, None, None
-
-    # 3. Load Mapping Label (tag2idx/idx2tag)
-    try:
-        # Kita butuh idx2tag (angka ke label)
-        with open('tag2idx.pkl', 'rb') as f:
-            idx2tag_loaded = pickle.load(f)
-            
-        # Cek apakah formatnya {label: angka} atau {angka: label}
-        # Jika formatnya {label: angka}, kita balik dulu
-        sample_key = next(iter(idx2tag_loaded))
-        if isinstance(sample_key, str): 
-            idx2tag = {v: k for k, v in idx2tag_loaded.items()}
-        else:
-            idx2tag = idx2tag_loaded
-            
-    except FileNotFoundError:
-        st.warning("File tag2idx.pkl tidak ditemukan. Menggunakan mapping default (Mungkin tidak akurat).")
-        # List tag default jika file tidak ada
-        tags_list = ['O', 'B_ADVO', 'B_ARTV', 'B_CRIA', 'B_DEFN', 'B_JUDG', 'B_JUDP', 
-                     'B_PENA', 'B_PROS', 'B_PUNI', 'B_REGI', 'B_TIMV', 'B_VERN', 
-                     'I_ADVO', 'I_ARTV', 'I_CRIA', 'I_DEFN', 'I_JUDG', 'I_JUDP', 
-                     'I_PENA', 'I_PROS', 'I_PUNI', 'I_REGI', 'I_TIMV', 'I_VERN']
-        idx2tag = {i: tag for i, tag in enumerate(tags_list)}
         
-    return model, cbow_model, idx2tag
+        # B. Load Model Word2Vec (CBOW)
+        cbow_model = Word2Vec.load("cbow_embedding.model")
+        
+        # C. Load Mapping Label (tag2idx.pkl)
+        # Kita perlu membalik mapping dari {Label: Angka} menjadi {Angka: Label}
+        # agar bisa menerjemahkan prediksi model (angka) kembali ke teks.
+        try:
+            with open('tag2idx.pkl', 'rb') as f:
+                loaded_map = pickle.load(f)
+            
+            # Deteksi format mapping dan balik kuncinya
+            sample_key = next(iter(loaded_map))
+            if isinstance(sample_key, str): 
+                # Jika format aslinya {'B_ADVO': 0, ...}, kita balik jadi {0: 'B_ADVO', ...}
+                idx2tag = {v: k for k, v in loaded_map.items()}
+            else:
+                idx2tag = loaded_map
+        except:
+            st.warning("⚠️ File tag2idx.pkl tidak ditemukan. Menggunakan mapping default (urutan alfabet).")
+            # Fallback jika file hilang
+            tags_sorted = sorted(['O', 'B_ADVO', 'B_ARTV', 'B_CRIA', 'B_DEFN', 'B_JUDG', 'B_JUDP', 
+                                  'B_PENA', 'B_PROS', 'B_PUNI', 'B_REGI', 'B_TIMV', 'B_VERN', 
+                                  'I_ADVO', 'I_ARTV', 'I_CRIA', 'I_DEFN', 'I_JUDG', 'I_JUDP', 
+                                  'I_PENA', 'I_PROS', 'I_PUNI', 'I_REGI', 'I_TIMV', 'I_VERN'])
+            idx2tag = {i: tag for i, tag in enumerate(tags_sorted)}
+            
+        return model, cbow_model, idx2tag
 
-# Memuat resources
+    except Exception as e:
+        st.error(f"Terjadi kesalahan saat memuat model: {e}")
+        return None, None, None
+
+# Load semua resource saat aplikasi mulai
 model, cbow_model, idx2tag = load_resources()
 
-# --- Fungsi Preprocessing (Sesuai PDF Halaman 24 & 39) ---
-def get_word_embedding(word, cbow_model):
-    """Mengambil vektor embedding untuk satu kata."""
-    if word in cbow_model.wv:
-        return cbow_model.wv[word]
-    else:
-        return np.zeros(cbow_model.vector_size)
+# ==========================================
+# 4. PREPROCESSING (PENTING!)
+# ==========================================
+def clean_text(text):
+    """Membersihkan teks agar formatnya sama persis dengan saat training Word2Vec."""
+    # 1. Lowercase (huruf kecil semua)
+    text = text.lower()
+    
+    # 2. Ganti angka dengan token <X> (Sesuai PDF Hal 3)
+    # Contoh: "Pasal 362" -> "pasal <X>"
+    # Tanpa ini, model akan bingung melihat angka
+    text = re.sub(r'\d+', '<X>', text)
+    return text
 
 def prepare_input(text, cbow_model, max_len):
-    """
-    Mengubah kalimat input menjadi matriks vektor embedding.
-    Logika: Tokenize -> Get Embedding -> Padding
-    """
-    # 1. Tokenisasi sederhana (split spasi) & lowercase
-    words = text.lower().split()
+    # Bersihkan teks
+    cleaned_text = clean_text(text)
+    words = cleaned_text.split()
     
-    # 2. Ubah kata jadi vektor
-    # X shape: (1, jumlah_kata, vector_size)
-    X = [[get_word_embedding(word, cbow_model) for word in words]]
+    # Konversi Kata ke Vektor Embedding
+    X = []
+    processed_words = [] # Menyimpan kata asli untuk ditampilkan
     
-    # 3. Padding agar panjangnya sama dengan MAX_LEN (100)
-    # padding='post' artinya nol ditambahkan di belakang
+    for word in words:
+        if word in cbow_model.wv:
+            X.append(cbow_model.wv[word])
+        else:
+            # Jika kata tidak dikenal (OOV), gunakan vektor nol
+            X.append(np.zeros(cbow_model.vector_size))
+        processed_words.append(word)
+            
+    # Tambahkan dimensi batch: (jumlah_kata, 10) -> (1, jumlah_kata, 10)
+    X = [X]
+    
+    # Padding agar panjangnya pas 100
     X_padded = pad_sequences(maxlen=max_len, sequences=X, padding="post", dtype='float32')
     
     return X_padded, words
 
-# --- UI Aplikasi Utama ---
-st.title("⚖️ Deteksi Entitas Pidana")
-st.write("Model: BiLSTM + Word2Vec (CBOW)")
+# ==========================================
+# 5. USER INTERFACE (UI) UTAMA
+# ==========================================
+st.title("⚖️ NER Putusan Pidana")
+st.markdown("""
+Aplikasi ini mengekstrak entitas penting (Terdakwa, Hakim, Hukuman, dll) dari teks putusan pengadilan.
+**Visualisasi:** Kotak Hitam = Entitas Terdeteksi.
+""")
 
-# Input Text Area
-input_text = st.text_area("Masukkan teks putusan:", height=150, 
-                          placeholder="Contoh: Terdakwa Sabar bin Sawijo terbukti melanggar Pasal 362 KUHP...")
+# Input Area
+default_text = "Menyatakan Terdakwa SABAR BIN SAWIJO terbukti secara sah melanggar Pasal 362 KUHP dan dijatuhi hukuman 2 tahun penjara."
+input_text = st.text_area("Masukkan Teks Putusan:", height=150, value=default_text)
 
-if st.button("Prediksi"):
-    if input_text and model and cbow_model:
-        # 1. Preprocessing
+# Tombol Prediksi
+if st.button("🔍 Analisis Teks", type="primary"):
+    if model is not None:
+        # A. Preprocessing & Prediksi
         X_new, tokenized_words = prepare_input(input_text, cbow_model, MAX_LEN)
         
-        # 2. Prediksi Model
-        y_pred = model.predict(X_new)
+        # Prediksi Probabilitas
+        y_pred = model.predict(X_new) 
         
-        # 3. Ambil hasil argmax (index dengan probabilitas tertinggi)
-        # y_pred shape: (1, 100, jumlah_tag) -> ambil batch pertama
+        # Ambil kelas dengan probabilitas tertinggi (Argmax)
         y_pred_indices = np.argmax(y_pred, axis=-1)[0]
         
-        # 4. Tampilkan Hasil
         st.subheader("Hasil Ekstraksi:")
+        st.caption("Entitas yang terdeteksi ditandai dengan kotak hitam.")
         
-        # Format hasil agar enak dibaca
-        results = []
+        # B. Pembuatan Visualisasi HTML
+        html_output = "<div style='line-height: 2.5; background-color: #f0f2f6; padding: 20px; border-radius: 10px;'>"
+        
+        found_entities = []
+        
         for i, word in enumerate(tokenized_words):
             if i < MAX_LEN:
-                tag_index = y_pred_indices[i]
-                tag_name = idx2tag.get(tag_index, "Unknown")
+                tag_idx = y_pred_indices[i]
+                tag_label = idx2tag.get(tag_idx, "O") # Default 'O' jika index error
                 
-                # Hanya simpan jika bukan padding atau mapping valid
-                results.append({"Kata": word, "Label": tag_name})
-
-        # Tampilkan sebagai Dataframe berwarna
-        import pandas as pd
-        df = pd.DataFrame(results)
+                # Kita kembalikan token <X> ke bentuk angka/kata asli jika memungkinkan
+                # (Disini kita pakai kata hasil tokenisasi clean_text)
+                display_word = word
+                
+                if tag_label != "O": # Jika BUKAN 'O' (Other), berarti Entitas
+                    # Render Kotak Hitam
+                    html_output += f"<span class='entity-box'>{display_word}<span class='entity-label'>{tag_label}</span></span> "
+                    found_entities.append({"Kata": display_word, "Tipe Entitas": tag_label})
+                else:
+                    # Render Teks Biasa
+                    html_output += f"<span class='normal-text'>{display_word} </span>"
         
-        # Mewarnai baris yang bukan 'O' (Other) agar entitas terlihat jelas
-        def highlight_entity(row):
-            if row['Label'] != 'O':
-                return ['background-color: #fffdc1'] * len(row)
-            else:
-                return [''] * len(row)
-
-        st.dataframe(df.style.apply(highlight_entity, axis=1), use_container_width=True)
+        html_output += "</div>"
         
-        # Tampilan Raw Tags (Optional)
-        with st.expander("Lihat Raw Tags"):
-            st.write(results)
-
-    elif not input_text:
-        st.warning("Mohon masukkan teks terlebih dahulu.")
+        # C. Tampilkan ke Layar
+        st.markdown(html_output, unsafe_allow_html=True)
+        
+        # D. Tampilkan Tabel Ringkasan
+        if found_entities:
+            st.write("### 📋 Daftar Entitas")
+            import pandas as pd
+            df_res = pd.DataFrame(found_entities)
+            st.dataframe(df_res, use_container_width=True)
+        else:
+            st.info("Tidak ada entitas hukum spesifik yang ditemukan dalam teks ini.")
+            
     else:
-        st.error("Model belum siap. Cek file .keras, .model, dan .pkl Anda.")
+        st.error("Model gagal dimuat. Pastikan file .keras, .model, dan .pkl sudah diupload ke GitHub.")
 
-# Footer info
+# Footer
 st.markdown("---")
-st.caption("Dideploy menggunakan Streamlit Community Cloud")
+st.caption("Dikembangkan menggunakan BiLSTM + Word2Vec (CBOW)")
