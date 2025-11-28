@@ -5,6 +5,7 @@ from gensim.models import Word2Vec
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 import pickle
 import re
+import string
 from collections import Counter
 
 # ==========================================
@@ -95,15 +96,22 @@ model, cbow_model, idx2tag = load_resources()
 # ==========================================
 def clean_text(text):
     text = text.lower()
+    # Hapus tanda baca (titik, koma, dll) agar sesuai dengan Word2Vec
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    # Ganti angka dengan <X>
     text = re.sub(r'\d+', '<X>', text)
     return text
 
 def prepare_input(text, cbow_model, max_len):
+    # Token display (pertahankan tanda baca untuk visualisasi)
     original_tokens = text.split() 
+    
+    # Token model (bersih tanpa tanda baca)
     cleaned_text = clean_text(text)
     model_tokens = cleaned_text.split()
     
     X = []
+    # Loop menggunakan model_tokens untuk lookup vector
     for word in model_tokens:
         if word in cbow_model.wv:
             X.append(cbow_model.wv[word])
@@ -183,14 +191,15 @@ if st.button("🔍 Analisis Teks", type="primary"):
         html_output = "<div style='line-height: 2.5; background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 1px solid #ddd;'>"
         
         found_entities = []
-        limit = min(len(model_tokens), MAX_LEN)
+        # Gunakan panjang terpendek antara tokens asli, tokens model, dan max_len untuk menghindari error
+        limit = min(len(original_tokens), len(model_tokens), MAX_LEN)
         
         for i in range(limit):
             tag_idx = y_pred_indices[i]
             tag_label = current_idx2tag.get(tag_idx, "Unknown")
             
-            # Tampilkan kata asli
-            display_word = original_tokens[i] if i < len(original_tokens) else model_tokens[i]
+            # Tampilkan kata asli (yang masih ada tanda bacanya)
+            display_word = original_tokens[i]
             
             if tag_label != "O": 
                 # Entitas (Kotak Hitam)
